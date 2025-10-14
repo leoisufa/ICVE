@@ -7,8 +7,11 @@
 **Project Leader:** *Xianfang Zeng*  
 **Corresponding Authors:** *Gang Yu, Guosheng Lin*
 
+PyTorch implementation of the paper:  
+[In-Context Learning with Unpaired Clips for Instruction-based Video Editing](https://arxiv.org/)
+
 ## 🧩 Overview
-ICVE proposes a **low-cost pretraining strategy** for instruction-based video editing via **in-context learning from unpaired clips**. Built upon [**HunyuanVideoT2V**](https://github.com/Tencent-Hunyuan/HunyuanVideo), it first learns editing concepts from **about 1M unpaired videos**, then fine-tunes on **<150K paired editing data** for improved instruction alignment and visual quality — enabling general editing operations guided by natural language.
+ICVE proposes a low-cost pretraining strategy for instruction-based video editing via in-context learning from unpaired clips. Built upon [HunyuanVideoT2V](https://github.com/Tencent-Hunyuan/HunyuanVideo), it first learns editing concepts from about 1M unpaired videos, then fine-tunes on <150K paired editing data for improved instruction alignment and visual quality — enabling general editing operations guided by natural language.
 
 ## 🎥 Demo
 <p align="center">
@@ -54,11 +57,11 @@ python -m pip install git+https://github.com/Dao-AILab/flash-attention.git@v2.6.
 ## 🧱 Download Pretrained Models
 1. **HunyuanVideo Pretrained Weights**  
    Follow the official HunyuanVideo instructions here:  
-   👉 [Download Pretrained Models](https://github.com/Tencent-Hunyuan/HunyuanVideo?tab=readme-ov-file#-download-pretrained-models)  
+   👉 [Download Pretrained Models](https://github.com/Tencent-Hunyuan/HunyuanVideo/blob/main/ckpts/README.md)  
    and place the downloaded weights into the `ckpts/` directory as shown above.
 2. **ICVE Checkpoint**  
    Download the our model weights from  
-   👉 [Hugging Face](https://huggingface.co)  
+   👉 [Hugging Face](https://huggingface.co/leoisufa/ICVE)  
    and place them in the `checkpoint/` directory.
 
 The folder structure of this project should look like this after setup:
@@ -101,17 +104,15 @@ python sample_video.py \
 ```
 
 ## 🔗 BibTeX
-If you find [ICEV]() useful for your research and applications, please cite using this BibTeX:
+If you find [ICEV](https://arxiv.org/) useful for your research and applications, please cite using this BibTeX:
 ```BibTeX
 @article{liao2025icve,
   title   = {In-Context Learning with Unpaired Clips for Instruction-based Video Editing},
   author  = {Liao, Xinyao and Zeng, Xianfang and Song, Ziye and Fu, Zhoujie and Yu, Gang and Lin, Guosheng},
-  journal = {arXiv preprint arXiv:2503.XXXX},
+  journal = {arXiv preprint arXiv:25xx.xxxx},
   year    = {2025}
 }
 ```
-
-
 
 ## 🙏 Acknowledgements
 This work builds upon the open-source efforts of [HunyuanVideo](https://github.com/Tencent-Hunyuan/HunyuanVideo) and [FastVideo](https://github.com/hao-ai-lab/FastVideo).
