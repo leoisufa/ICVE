@@ -8,7 +8,7 @@
 **Corresponding Authors:** *Gang Yu, Guosheng Lin*
 
 PyTorch implementation of the paper:  
-[In-Context Learning with Unpaired Clips for Instruction-based Video Editing](https://arxiv.org/)
+[In-Context Learning with Unpaired Clips for Instruction-based Video Editing](https://arxiv.org/abs/2510.14648)
 
 ## 🧩 Overview
 ICVE proposes a low-cost pretraining strategy for instruction-based video editing via in-context learning from unpaired clips. Built upon [HunyuanVideoT2V](https://github.com/Tencent-Hunyuan/HunyuanVideo), it first learns editing concepts from about 1M unpaired videos, then fine-tunes on <150K paired editing data for improved instruction alignment and visual quality — enabling general editing operations guided by natural language.
@@ -104,13 +104,16 @@ python sample_video.py \
 ```
 
 ## 🔗 BibTeX
-If you find [ICEV](https://arxiv.org/) useful for your research and applications, please cite using this BibTeX:
+If you find [ICEV](https://arxiv.org/abs/2510.14648) useful for your research and applications, please cite using this BibTeX:
 ```BibTeX
-@article{liao2025icve,
-  title   = {In-Context Learning with Unpaired Clips for Instruction-based Video Editing},
-  author  = {Liao, Xinyao and Zeng, Xianfang and Song, Ziye and Fu, Zhoujie and Yu, Gang and Lin, Guosheng},
-  journal = {arXiv preprint arXiv:25xx.xxxx},
-  year    = {2025}
+@misc{liao2025incontextlearningunpairedclips,
+  title={In-Context Learning with Unpaired Clips for Instruction-based Video Editing}, 
+  author={Xinyao Liao and Xianfang Zeng and Ziye Song and Zhoujie Fu and Gang Yu and Guosheng Lin},
+  year={2025},
+  eprint={2510.14648},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  url={https://arxiv.org/abs/2510.14648},
 }
 ```
 
