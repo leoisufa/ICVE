@@ -50,12 +50,14 @@ ICVE proposes a low-cost pretraining strategy for instruction-based video editin
 
 ## 🎥 Video Demo
 <p align="center">
-  <a href="https://youtu.be/ZPXPMJUJnwU">
-    <img src="https://img.youtube.com/vi/ZPXPMJUJnwU/maxresdefault.jpg" 
-         alt="ICVE Demo Video" 
-         width="80%" 
+  <a href="https://youtu.be/ZPXPMJUJnwU" target="_blank">
+    <img src="assets/gifs/output_small.gif" 
+         alt="ICVE Demo GIF" 
+         width="100%" 
          style="max-width:900px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.15);">
   </a>
+  <br>
+  <em>Click the GIF above to watch the full video on YouTube 🎬</em>
 </p>
 
 ## 🛠️ Dependencies and Installation
