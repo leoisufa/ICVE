@@ -39,7 +39,10 @@
 </div>
 
 <div align="center">
-  <img src="assets/images/demo.jpg" alt="Demo Image" width="100%" style="max-width:900px;">
+  <img src="assets/gifs/output_small.gif" 
+       alt="Demo GIF" 
+       width="100%" 
+       style="max-width:900px;">
 </div>
 
 **Star us if you find this project useful! ⭐**
@@ -54,13 +57,13 @@ ICVE proposes a low-cost pretraining strategy for instruction-based video editin
 ## 🎥 Video Demo
 <p align="center">
   <a href="https://youtu.be/ZPXPMJUJnwU" target="_blank">
-    <img src="assets/gifs/output_small.gif" 
-         alt="ICVE Demo GIF" 
+    <img src="https://img.youtube.com/vi/ZPXPMJUJnwU/maxresdefault.jpg" 
+         alt="ICVE Demo Video" 
          width="100%" 
          style="max-width:900px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.15);">
   </a>
   <br>
-  <em>Click the GIF above to watch the full video on YouTube 🎬</em>
+  <em>Click the image above to watch the full video on YouTube 🎬</em>
 </p>
 
 ## 🛠️ Dependencies and Installation
