@@ -58,10 +58,8 @@ ICVE proposes a low-cost pretraining strategy for instruction-based video editin
 <p align="center">
   <img src="assets/images/Model.jpg" alt="ICVE Model Architecture" width="85%" style="max-width:900px;">
   <br>
-  <em>Figure 2. In-context Instruction-based Video Editing Model.</em>
+  <em>Figure 2. In-context Instruction-based Video Editing Model. The instruction, original video, and edited video are injected into the model in an in-context manner. The timesteps corresponding to the original video tokens are fixed to 0, while the timesteps of text and edited video tokens retain T.</em>
 </p>
-
-The instruction, original video, and edited video are injected into the model in an in-context manner. The timesteps corresponding to the original video tokens are fixed to 0, while the timesteps of text and edited video tokens retain T.
 
 ## 🎥 Video Demo
 <p align="center">
