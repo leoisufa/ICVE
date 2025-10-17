@@ -46,20 +46,7 @@
 - [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is relased!
 
 ## 🧩 Overview
-
-<p align="center">
-  <img src="assets/images/DataCuration.jpg" alt="ICVE Data Curation Pipeline" width="85%" style="max-width:900px;">
-  <br>
-  <em>Figure 1. Pipeline of training data curation.</em>
-</p>
-
 ICVE proposes a low-cost pretraining strategy for instruction-based video editing via in-context learning from unpaired clips. Built upon [HunyuanVideoT2V](https://github.com/Tencent-Hunyuan/HunyuanVideo), it first learns editing concepts from about **1M** unpaired videos, then fine-tunes on **<150K** paired editing data for improved instruction alignment and visual quality — enabling general editing operations guided by natural language.
-
-<p align="center">
-  <img src="assets/images/Model.jpg" alt="ICVE Model Architecture" width="85%" style="max-width:900px;">
-  <br>
-  <em>Figure 2. In-context Instruction-based Video Editing Model. The instruction, original video, and edited video are injected into the model in an in-context manner. The timesteps corresponding to the original video tokens are fixed to 0, while the timesteps of text and edited video tokens retain T.</em>
-</p>
 
 ## 🎥 Video Demo
 <p align="center">
