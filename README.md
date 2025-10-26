@@ -155,10 +155,10 @@ We thank the following prior art for their excellent open source work:
 ## 🔗 BibTeX
 If you find [ICEV](https://arxiv.org/abs/2510.14648) useful for your research and applications, please cite using this BibTeX:
 ```BibTeX
-@article{xu2025withanyone,
-  title={In-Context Learning with Unpaired Clips for Instruction-based Video Editing}, 
-  author={Xinyao Liao and Xianfang Zeng and Ziye Song and Zhoujie Fu and Gang Yu and Guosheng Lin},
-  journal={arXiv preprint arxiv:2510.14648},
+@article{liao2025context,
+  title={In-Context Learning with Unpaired Clips for Instruction-based Video Editing},
+  author={Liao, Xinyao and Zeng, Xianfang and Song, Ziye and Fu, Zhoujie and Yu, Gang and Lin, Guosheng},
+  journal={arXiv preprint arXiv:2510.14648},
   year={2025}
 }
 ```
