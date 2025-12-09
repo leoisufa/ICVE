@@ -930,8 +930,13 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
         
         with torch.autocast(device_type="cuda", dtype=vae_dtype, enabled=vae_autocast_enabled):
-            latents_org = self.vae.encode(videos_org).latent_dist.mode()
-            latents_org.mul_(self.vae.config.scaling_factor)
+            if enable_tiling:
+                self.vae.enable_tiling()
+                latents_org = self.vae.encode(videos_org).latent_dist.mode()
+                latents_org.mul_(self.vae.config.scaling_factor)
+            else:
+                latents_org = self.vae.encode(videos_org).latent_dist.mode()
+                latents_org.mul_(self.vae.config.scaling_factor)
         
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels

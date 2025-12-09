@@ -47,6 +47,8 @@
 
 **Star us if you find this project useful! ⭐**
 
+### **The new model will be coming soon. Wan2.1-T2V-14B fondation model.**
+
 ## 🎉 Updates
 - [10/2025] 🔥 [Model checkpoints](https://huggingface.co/leoisufa/ICVE) is released!
 - [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is relased!
@@ -126,14 +128,17 @@ ICVE/
 ``` 
 
 ## 🚀 Running the Demos
+
+> **OOM Bug Fix:** We have fixed an OOM issue caused by the VAE not enabling `enable_tiling()` during original video encoding. After the fix, running inference on an original video with a resolution of 480×768×77 requires approximately 54 GB of GPU memory.
+
 You can directly run the provided demo scripts under the [`scripts/`](./scripts) directory.
  
 Alternatively, you can manually run the example command below:
 ```bash
 python sample_video.py \
     --dit-weight checkpoint/diffusion_pytorch_model.safetensors \
-    --video-size 384 240 \
-    --video-length 81 \
+    --video-size 768 480 \
+    --video-length 77 \
     --infer-steps 50 \
     --prompt "Add black glasses to the person's face." \
     --video "assets/glasses.mp4" \
