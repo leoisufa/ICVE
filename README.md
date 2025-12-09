@@ -50,6 +50,7 @@
 ### **The new model will be coming soon. Wan2.1-T2V-14B fondation model.**
 
 ## 🎉 Updates
+- [12/2025] ⚠️ Fix the GPU OOM bug on 480P inference.
 - [10/2025] 🔥 [Model checkpoints](https://huggingface.co/leoisufa/ICVE) is released!
 - [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is relased!
 
