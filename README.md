@@ -1,8 +1,6 @@
+# ICVE: In-Context Learning with Unpaired Clips for Instruction-based Video Editing
+
 <div align="center">
-  <!-- Project Title -->
-  <h1>
-    ICVE: In-Context Learning with Unpaired Clips for Instruction-based Video Editing
-  </h1>
   <!-- Project Badges -->
   <p>
     <a href="https://arxiv.org/abs/2510.14648">
