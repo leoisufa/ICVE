@@ -1,8 +1,7 @@
 <div align="center">
   <!-- Project Title -->
   <h1>
-    ICVE: In-Context Learning with Unpaired Clips for<br>
-    Instruction-based Video Editing
+    ICVE: In-Context Learning with Unpaired Clips for Instruction-based Video Editing
   </h1>
   <!-- Project Badges -->
   <p>
