@@ -1,26 +1,26 @@
-from typing import Any, List, Tuple, Optional, Union, Dict
-from einops import rearrange
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from diffusers.models import ModelMixin
 from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.models import ModelMixin
+from einops import rearrange
+
+from hyvideo.parallel.parallel_states import get_sequence_parallel_state, nccl_info
 
 from .activation_layers import get_activation_layer
+from .attenion import parallel_attention
+from .embed_layers import PatchEmbed, TextProjection, TimestepEmbedder
+from .mlp_layers import MLP, FinalLayer, MLPEmbedder
+from .modulate_layers import ModulateDiT, apply_gate, modulate
 from .norm_layers import get_norm_layer
-from .embed_layers import TimestepEmbedder, PatchEmbed, TextProjection
-from .attenion import attention, parallel_attention, get_cu_seqlens
-from .posemb_layers import apply_rotary_emb
-from .mlp_layers import MLP, MLPEmbedder, FinalLayer
-from .modulate_layers import ModulateDiT, modulate, apply_gate
+from .posemb_layers import apply_rotary_emb, get_nd_rotary_pos_embed, get_nd_rotary_pos_embed_4D
 from .token_refiner import SingleTokenRefiner
 
 
 class MMDoubleStreamBlock(nn.Module):
     """
-    A multimodal dit block with seperate modulation for
+    A multimodal dit block with separate modulation for
     text and image/video, see more details (SD3): https://arxiv.org/abs/2403.03206
                                      (Flux.1): https://github.com/black-forest-labs/flux
     """
@@ -51,31 +51,17 @@ class MMDoubleStreamBlock(nn.Module):
             act_layer=get_activation_layer("silu"),
             **factory_kwargs,
         )
-        self.img_norm1 = nn.LayerNorm(
-            hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
-        )
+        self.img_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs)
 
-        self.img_attn_qkv = nn.Linear(
-            hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
-        )
+        self.img_attn_qkv = nn.Linear(hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs)
         qk_norm_layer = get_norm_layer(qk_norm_type)
-        self.img_attn_q_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
-        self.img_attn_k_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
-        self.img_attn_proj = nn.Linear(
-            hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs
-        )
+        self.img_attn_q_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                                if qk_norm else nn.Identity())
+        self.img_attn_k_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                                if qk_norm else nn.Identity())
+        self.img_attn_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs)
 
-        self.img_norm2 = nn.LayerNorm(
-            hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
-        )
+        self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs)
         self.img_mlp = MLP(
             hidden_size,
             mlp_hidden_dim,
@@ -90,30 +76,16 @@ class MMDoubleStreamBlock(nn.Module):
             act_layer=get_activation_layer("silu"),
             **factory_kwargs,
         )
-        self.txt_norm1 = nn.LayerNorm(
-            hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
-        )
+        self.txt_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs)
 
-        self.txt_attn_qkv = nn.Linear(
-            hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
-        )
-        self.txt_attn_q_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
-        self.txt_attn_k_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
-        self.txt_attn_proj = nn.Linear(
-            hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs
-        )
+        self.txt_attn_qkv = nn.Linear(hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs)
+        self.txt_attn_q_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                                if qk_norm else nn.Identity())
+        self.txt_attn_k_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                                if qk_norm else nn.Identity())
+        self.txt_attn_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs)
 
-        self.txt_norm2 = nn.LayerNorm(
-            hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
-        )
+        self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs)
         self.txt_mlp = MLP(
             hidden_size,
             mlp_hidden_dim,
@@ -136,11 +108,9 @@ class MMDoubleStreamBlock(nn.Module):
         txt: torch.Tensor,
         vec: torch.Tensor,
         vec_clean: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        cu_seqlens_kv: Optional[torch.Tensor] = None,
-        max_seqlen_q: Optional[int] = None,
-        max_seqlen_kv: Optional[int] = None,
         freqs_cis: tuple = None,
+        text_mask: torch.Tensor = None,
+        mask_strategy=None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (
             img_mod1_shift,
@@ -173,67 +143,48 @@ class MMDoubleStreamBlock(nn.Module):
         img_modulated_edit = self.img_norm1(img_edit)
         img_modulated_edit = modulate(img_modulated_edit, shift=img_mod1_shift, scale=img_mod1_scale)
         img_modulated = torch.cat([img_modulated_org, img_modulated_edit], dim=1)
+
+         # Compute qkv and split heads.
         img_qkv = self.img_attn_qkv(img_modulated)
-        img_q, img_k, img_v = rearrange(
-            img_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num
-        )
+        img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num)
         # Apply QK-Norm if needed
         img_q = self.img_attn_q_norm(img_q).to(img_v)
         img_k = self.img_attn_k_norm(img_k).to(img_v)
 
-        # Apply RoPE if needed.
-        if freqs_cis is not None:
-            img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-            assert (
-                img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
-            ), f"img_kk: {img_qq.shape}, img_q: {img_q.shape}, img_kk: {img_kk.shape}, img_k: {img_k.shape}"
-            img_q, img_k = img_qq, img_kk
+        if get_sequence_parallel_state():
+            def shrink_head(encoder_state, dim):
+                local_heads = encoder_state.shape[dim] // nccl_info.sp_size
+                return encoder_state.narrow(dim, nccl_info.rank_within_group * local_heads, local_heads)
+
+            freqs_cis = (
+                shrink_head(freqs_cis[0], dim=0).repeat(2,1),
+                shrink_head(freqs_cis[1], dim=0).repeat(2,1),
+            )
+        else:
+            freqs_cis = (freqs_cis[0].repeat(2,1), freqs_cis[1].repeat(2,1))
+
+        img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
+        assert (img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
+                ), f"img_kk: {img_qq.shape}, img_q: {img_q.shape}, img_kk: {img_kk.shape}, img_k: {img_k.shape}"
+        img_q, img_k = img_qq, img_kk
 
         # Prepare txt for attention.
         txt_modulated = self.txt_norm1(txt)
-        txt_modulated = modulate(
-            txt_modulated, shift=txt_mod1_shift, scale=txt_mod1_scale
-        )
+        txt_modulated = modulate(txt_modulated, shift=txt_mod1_shift, scale=txt_mod1_scale)
         txt_qkv = self.txt_attn_qkv(txt_modulated)
-        txt_q, txt_k, txt_v = rearrange(
-            txt_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num
-        )
+        txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num)
         # Apply QK-Norm if needed.
         txt_q = self.txt_attn_q_norm(txt_q).to(txt_v)
         txt_k = self.txt_attn_k_norm(txt_k).to(txt_v)
 
-        # Run actual attention.
-        q = torch.cat((img_q, txt_q), dim=1)
-        k = torch.cat((img_k, txt_k), dim=1)
-        v = torch.cat((img_v, txt_v), dim=1)
-        assert (
-            cu_seqlens_q.shape[0] == 2 * img_org.shape[0] + 1
-        ), f"cu_seqlens_q.shape:{cu_seqlens_q.shape}, img.shape[0]:{img_org.shape[0]}"
-        
-        # attention computation start
-        if not self.hybrid_seq_parallel_attn:
-            attn = attention(
-                q,
-                k,
-                v,
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_kv=cu_seqlens_kv,
-                max_seqlen_q=max_seqlen_q,
-                max_seqlen_kv=max_seqlen_kv,
-                batch_size=img_k.shape[0],
-            )
-        else:
-            attn = parallel_attention(
-                self.hybrid_seq_parallel_attn,
-                q,
-                k,
-                v,
-                img_q_len=img_q.shape[1],
-                img_kv_len=img_k.shape[1],
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_kv=cu_seqlens_kv
-            )
-            
+        attn = parallel_attention(
+            (img_q, txt_q),
+            (img_k, txt_k),
+            (img_v, txt_v),
+            text_mask=text_mask,
+            mask_strategy=mask_strategy,
+        )
+
         # attention computation end
         img_length = img_org.shape[1] + img_edit.shape[1]
         img_attn, txt_attn = attn[:, :img_length], attn[:, img_length:]
@@ -291,32 +242,20 @@ class MMSingleStreamBlock(nn.Module):
         head_dim = hidden_size // heads_num
         mlp_hidden_dim = int(hidden_size * mlp_width_ratio)
         self.mlp_hidden_dim = mlp_hidden_dim
-        self.scale = qk_scale or head_dim ** -0.5
+        self.scale = qk_scale or head_dim**-0.5
 
         # qkv and mlp_in
-        self.linear1 = nn.Linear(
-            hidden_size, hidden_size * 3 + mlp_hidden_dim, **factory_kwargs
-        )
+        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + mlp_hidden_dim, **factory_kwargs)
         # proj and mlp_out
-        self.linear2 = nn.Linear(
-            hidden_size + mlp_hidden_dim, hidden_size, **factory_kwargs
-        )
+        self.linear2 = nn.Linear(hidden_size + mlp_hidden_dim, hidden_size, **factory_kwargs)
 
         qk_norm_layer = get_norm_layer(qk_norm_type)
-        self.q_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
-        self.k_norm = (
-            qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
-            if qk_norm
-            else nn.Identity()
-        )
+        self.q_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                       if qk_norm else nn.Identity())
+        self.k_norm = (qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
+                       if qk_norm else nn.Identity())
 
-        self.pre_norm = nn.LayerNorm(
-            hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
-        )
+        self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs)
 
         self.mlp_act = get_activation_layer(mlp_act_type)()
         self.modulation = ModulateDiT(
@@ -341,12 +280,10 @@ class MMSingleStreamBlock(nn.Module):
         vec: torch.Tensor,
         vec_clean: torch.Tensor,
         txt_len: int,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        cu_seqlens_kv: Optional[torch.Tensor] = None,
-        max_seqlen_q: Optional[int] = None,
-        max_seqlen_kv: Optional[int] = None,
         freqs_cis: Tuple[torch.Tensor, torch.Tensor] = None,
-    ) -> torch.Tensor:
+        text_mask: torch.Tensor = None,
+        mask_strategy=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mod_shift, mod_scale, mod_gate = self.modulation(vec).chunk(3, dim=-1)
         mod_shift_clean, mod_scale_clean, mod_gate_clean = self.modulation(vec_clean).chunk(3, dim=-1)
         img_mod_org = modulate(self.pre_norm(img_org), shift=mod_shift_clean, scale=mod_scale_clean)
@@ -362,46 +299,34 @@ class MMSingleStreamBlock(nn.Module):
         q = self.q_norm(q).to(v)
         k = self.k_norm(k).to(v)
 
-        # Apply RoPE if needed.
-        if freqs_cis is not None:
-            img_q, txt_q = q[:, :-txt_len, :, :], q[:, -txt_len:, :, :]
-            img_k, txt_k = k[:, :-txt_len, :, :], k[:, -txt_len:, :, :]
-            img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-            assert (
-                img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
-            ), f"img_kk: {img_qq.shape}, img_q: {img_q.shape}, img_kk: {img_kk.shape}, img_k: {img_k.shape}"
-            img_q, img_k = img_qq, img_kk
-            q = torch.cat((img_q, txt_q), dim=1)
-            k = torch.cat((img_k, txt_k), dim=1)
+        if get_sequence_parallel_state():
+            def shrink_head(encoder_state, dim):
+                local_heads = encoder_state.shape[dim] // nccl_info.sp_size
+                return encoder_state.narrow(dim, nccl_info.rank_within_group * local_heads, local_heads)
 
-        # Compute attention.
-        assert (
-            cu_seqlens_q.shape[0] == 2 * img_org.shape[0] + 1
-        ), f"cu_seqlens_q.shape:{cu_seqlens_q.shape}, x.shape[0]:{img_org.shape[0]}"
-        
-        # attention computation start
-        if not self.hybrid_seq_parallel_attn:
-            attn = attention(
-                q,
-                k,
-                v,
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_kv=cu_seqlens_kv,
-                max_seqlen_q=max_seqlen_q,
-                max_seqlen_kv=max_seqlen_kv,
-                batch_size=img_org.shape[0],
+            freqs_cis = (
+                shrink_head(freqs_cis[0], dim=0).repeat(2, 1),
+                shrink_head(freqs_cis[1], dim=0).repeat(2, 1),
             )
         else:
-            attn = parallel_attention(
-                self.hybrid_seq_parallel_attn,
-                q,
-                k,
-                v,
-                img_q_len=img_q.shape[1],
-                img_kv_len=img_k.shape[1],
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_kv=cu_seqlens_kv
-            )
+            freqs_cis = (freqs_cis[0].repeat(2,1), freqs_cis[1].repeat(2,1))
+
+        img_q, txt_q = q[:, :-txt_len, :, :], q[:, -txt_len:, :, :]
+        img_k, txt_k = k[:, :-txt_len, :, :], k[:, -txt_len:, :, :]
+        img_v, txt_v = v[:, :-txt_len, :, :], v[:, -txt_len:, :, :]
+        img_qq, img_kk = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
+        assert (img_qq.shape == img_q.shape and img_kk.shape == img_k.shape
+                ), f"img_kk: {img_qq.shape}, img_q: {img_q.shape}, img_kk: {img_kk.shape}, img_k: {img_k.shape}"
+        img_q, img_k = img_qq, img_kk
+
+        attn = parallel_attention(
+            (img_q, txt_q),
+            (img_k, txt_k),
+            (img_v, txt_v),
+            text_mask=text_mask,
+            mask_strategy=mask_strategy,
+        )
+
         # attention computation end
 
         # Compute activation in mlp stream, cat again and run second linear layer.
@@ -468,7 +393,6 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
     @register_to_config
     def __init__(
         self,
-        args: Any,
         patch_size: list = [1, 2, 2],
         in_channels: int = 4,  # Should be VAE.config.latent_channels.
         out_channels: int = None,
@@ -487,6 +411,9 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         use_attention_mask: bool = True,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
+        text_states_dim: int = 4096,
+        text_states_dim_2: int = 768,
+        rope_theta: int = 256,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -497,100 +424,78 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         self.unpatchify_channels = self.out_channels
         self.guidance_embed = guidance_embed
         self.rope_dim_list = rope_dim_list
-
+        self.rope_theta = rope_theta
         # Text projection. Default to linear projection.
         # Alternative: TokenRefiner. See more details (LI-DiT): http://arxiv.org/abs/2406.11831
         self.use_attention_mask = use_attention_mask
         self.text_projection = text_projection
 
-        self.text_states_dim = args.text_states_dim
-        self.text_states_dim_2 = args.text_states_dim_2
-
         if hidden_size % heads_num != 0:
-            raise ValueError(
-                f"Hidden size {hidden_size} must be divisible by heads_num {heads_num}"
-            )
+            raise ValueError(f"Hidden size {hidden_size} must be divisible by heads_num {heads_num}")
         pe_dim = hidden_size // heads_num
         if sum(rope_dim_list) != pe_dim:
-            raise ValueError(
-                f"Got {rope_dim_list} but expected positional dim {pe_dim}"
-            )
+            raise ValueError(f"Got {rope_dim_list} but expected positional dim {pe_dim}")
         self.hidden_size = hidden_size
         self.heads_num = heads_num
 
         # image projection
-        self.img_in = PatchEmbed(
-            self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs
-        )
+        self.img_in = PatchEmbed(self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs)
 
         # text projection
         if self.text_projection == "linear":
             self.txt_in = TextProjection(
-                self.text_states_dim,
+                self.config.text_states_dim,
                 self.hidden_size,
                 get_activation_layer("silu"),
                 **factory_kwargs,
             )
         elif self.text_projection == "single_refiner":
             self.txt_in = SingleTokenRefiner(
-                self.text_states_dim, hidden_size, heads_num, depth=2, **factory_kwargs
+                self.config.text_states_dim,
+                hidden_size,
+                heads_num,
+                depth=2,
+                **factory_kwargs,
             )
         else:
-            raise NotImplementedError(
-                f"Unsupported text_projection: {self.text_projection}"
-            )
+            raise NotImplementedError(f"Unsupported text_projection: {self.text_projection}")
 
         # time modulation
-        self.time_in = TimestepEmbedder(
-            self.hidden_size, get_activation_layer("silu"), **factory_kwargs
-        )
+        self.time_in = TimestepEmbedder(self.hidden_size, get_activation_layer("silu"), **factory_kwargs)
 
         # text modulation
-        self.vector_in = MLPEmbedder(
-            self.text_states_dim_2, self.hidden_size, **factory_kwargs
-        )
+        self.vector_in = MLPEmbedder(self.config.text_states_dim_2, self.hidden_size, **factory_kwargs)
 
         # guidance modulation
-        self.guidance_in = (
-            TimestepEmbedder(
-                self.hidden_size, get_activation_layer("silu"), **factory_kwargs
-            )
-            if guidance_embed
-            else None
-        )
+        self.guidance_in = (TimestepEmbedder(self.hidden_size, get_activation_layer("silu"), **factory_kwargs)
+                            if guidance_embed else None)
 
         # double blocks
-        self.double_blocks = nn.ModuleList(
-            [
-                MMDoubleStreamBlock(
-                    self.hidden_size,
-                    self.heads_num,
-                    mlp_width_ratio=mlp_width_ratio,
-                    mlp_act_type=mlp_act_type,
-                    qk_norm=qk_norm,
-                    qk_norm_type=qk_norm_type,
-                    qkv_bias=qkv_bias,
-                    **factory_kwargs,
-                )
-                for _ in range(mm_double_blocks_depth)
-            ]
-        )
+        self.double_blocks = nn.ModuleList([
+            MMDoubleStreamBlock(
+                self.hidden_size,
+                self.heads_num,
+                mlp_width_ratio=mlp_width_ratio,
+                mlp_act_type=mlp_act_type,
+                qk_norm=qk_norm,
+                qk_norm_type=qk_norm_type,
+                qkv_bias=qkv_bias,
+                **factory_kwargs,
+            ) for _ in range(mm_double_blocks_depth)
+        ])
 
         # single blocks
-        self.single_blocks = nn.ModuleList(
-            [
-                MMSingleStreamBlock(
-                    self.hidden_size,
-                    self.heads_num,
-                    mlp_width_ratio=mlp_width_ratio,
-                    mlp_act_type=mlp_act_type,
-                    qk_norm=qk_norm,
-                    qk_norm_type=qk_norm_type,
-                    **factory_kwargs,
-                )
-                for _ in range(mm_single_blocks_depth)
-            ]
-        )
+        self.single_blocks = nn.ModuleList([
+            MMSingleStreamBlock(
+                self.hidden_size,
+                self.heads_num,
+                mlp_width_ratio=mlp_width_ratio,
+                mlp_act_type=mlp_act_type,
+                qk_norm=qk_norm,
+                qk_norm_type=qk_norm_type,
+                **factory_kwargs,
+            ) for _ in range(mm_single_blocks_depth)
+        ])
 
         self.final_layer = FinalLayer(
             self.hidden_size,
@@ -612,32 +517,90 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         for block in self.single_blocks:
             block.disable_deterministic()
 
+    def get_rotary_pos_embed(self, rope_sizes):
+        target_ndim = 3
+
+        head_dim = self.hidden_size // self.heads_num
+        rope_dim_list = self.rope_dim_list
+        if rope_dim_list is None:
+            rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
+        assert (sum(rope_dim_list) == head_dim), "sum(rope_dim_list) should equal to head_dim of attention layer"
+        freqs_cos, freqs_sin = get_nd_rotary_pos_embed(
+            rope_dim_list,
+            rope_sizes,
+            theta=self.rope_theta,
+            use_real=True,
+            theta_rescale_factor=1,
+        )
+        return freqs_cos, freqs_sin
+    
+    def get_rotary_pos_embed_4D(self, rope_sizes: Tuple[int, int, int], batch_id: int):
+        """
+        Args:
+            rope_sizes: (T, H, W)
+            batch_id: int —— 新增，第一个维度
+        Returns:
+            freqs_cos, freqs_sin: [T*H*W, head_dim]
+        """
+        target_ndim = 4
+
+        head_dim = self.hidden_size // self.heads_num
+        rope_dim_list = getattr(self, "rope_dim_list", None)
+        if rope_dim_list is None:
+            rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
+            remain = head_dim - sum(rope_dim_list)
+            rope_dim_list[-1] += remain
+
+        assert sum(rope_dim_list) == head_dim, \
+            f"sum(rope_dim_list)={sum(rope_dim_list)} must equal head_dim={head_dim}"
+
+        freqs_cos, freqs_sin = get_nd_rotary_pos_embed_4D(
+            rope_dim_list,
+            rope_sizes,
+            batch_id=batch_id,
+            theta=self.rope_theta,
+            use_real=True,
+            theta_rescale_factor=1.0,
+            interpolation_factor=1.0,
+        )
+        return freqs_cos, freqs_sin
+
     def forward(
         self,
-        x_org: torch.Tensor,
-        x_edit: torch.Tensor,
-        t: torch.Tensor,  # Should be in range(0, 1000).
-        text_states: torch.Tensor = None,
-        text_mask: torch.Tensor = None,  # Now we don't use it.
-        text_states_2: Optional[torch.Tensor] = None,  # Text embedding for modulation.
-        freqs_cos: Optional[torch.Tensor] = None,
-        freqs_sin: Optional[torch.Tensor] = None,
-        guidance: torch.Tensor = None,  # Guidance for modulation, should be cfg_scale x 1000.
-        return_dict: bool = True,
+        hidden_states_org: torch.Tensor,
+        hidden_states_edit: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        encoder_attention_mask: torch.Tensor,
+        encoder_hidden_states_2: torch.Tensor,
+        timestep: torch.LongTensor,
+        mask_strategy=None,
+        output_features=False,
+        output_features_stride=8,
+        attention_kwargs: Optional[Dict[str, Any]] = None,
+        return_dict: bool = False,
+        guidance=None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
-        out = {}
-        img_org = x_org
-        img_edit = x_edit
-        txt = text_states
-        text_2 = text_states_2
-        t = t
-        t_clean = torch.zeros_like(t)
-        _, _, ot, oh, ow = x_edit.shape
+        if guidance is None:
+            guidance = torch.tensor([6016.0], device=hidden_states_org.device, dtype=torch.bfloat16)
+        if mask_strategy is None:
+            mask_strategy = [[None] * self.heads_num for _ in range(len(self.double_blocks) + len(self.single_blocks))]
+            
+        img_org = hidden_states_org
+        img_edit = hidden_states_edit
+        txt = encoder_hidden_states
+        text_mask = encoder_attention_mask
+        text_2 = encoder_hidden_states_2
+        t = timestep
+        t_clean = torch.zeros_like(timestep)
+
+        _, _, ot, oh, ow = img_org.shape  # codespell:ignore
         tt, th, tw = (
-            ot // self.patch_size[0],
-            oh // self.patch_size[1],
-            ow // self.patch_size[2],
+            ot // self.patch_size[0],  # codespell:ignore
+            oh // self.patch_size[1],  # codespell:ignore
+            ow // self.patch_size[2],  # codespell:ignore
         )
+        original_tt = nccl_info.sp_size * tt
+        freqs_cos, freqs_sin = self.get_rotary_pos_embed((original_tt, th, tw))
 
         # Prepare modulation vectors.
         vec = self.time_in(t)
@@ -650,9 +613,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         # guidance modulation
         if self.guidance_embed:
             if guidance is None:
-                raise ValueError(
-                    "Didn't get guidance strength for guidance distilled model."
-                )
+                raise ValueError("Didn't get guidance strength for guidance distilled model.")
 
             # our timestep_embedding is merged into guidance_in(TimestepEmbedder)
             vec = vec + self.guidance_in(guidance)
@@ -667,64 +628,36 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         elif self.text_projection == "single_refiner":
             txt = self.txt_in(txt, t, text_mask if self.use_attention_mask else None)
         else:
-            raise NotImplementedError(
-                f"Unsupported text_projection: {self.text_projection}"
-            )
+            raise NotImplementedError(f"Unsupported text_projection: {self.text_projection}")
 
         txt_seq_len = txt.shape[1]
-        img_seq_len = img_org.shape[1] + img_edit.shape[1]
 
-        # Compute cu_squlens and max_seqlen for flash attention
-        cu_seqlens_q = get_cu_seqlens(text_mask, img_seq_len)
-        cu_seqlens_kv = cu_seqlens_q
-        max_seqlen_q = img_seq_len + txt_seq_len
-        max_seqlen_kv = max_seqlen_q
-
-        freqs_cis = (freqs_cos.repeat(2,1), freqs_sin.repeat(2,1)) if freqs_cos is not None else None
+        freqs_cis = (freqs_cos, freqs_sin) if freqs_cos is not None else None
         # --------------------- Pass through DiT blocks ------------------------
-        for _, block in enumerate(self.double_blocks):
-            double_block_args = [
-                img_org,
-                img_edit,
-                txt,
-                vec,
-                vec_clean,
-                cu_seqlens_q,
-                cu_seqlens_kv,
-                max_seqlen_q,
-                max_seqlen_kv,
-                freqs_cis,
-            ]
 
+        for index, block in enumerate(self.double_blocks):
+            double_block_args = [img_org, img_edit, txt, vec, vec_clean, freqs_cis, text_mask, mask_strategy[index]]
             img_org, img_edit, txt = block(*double_block_args)
-
+        # Merge txt and img to pass through single stream blocks.
+        if output_features:
+            features_list = []
         if len(self.single_blocks) > 0:
-            for _, block in enumerate(self.single_blocks):
-                single_block_args = [
-                    img_org,
-                    img_edit,
-                    txt,
-                    vec,
-                    vec_clean,
-                    txt_seq_len,
-                    cu_seqlens_q,
-                    cu_seqlens_kv,
-                    max_seqlen_q,
-                    max_seqlen_kv,
-                    freqs_cis,
-                ]
-
+            for index, block in enumerate(self.single_blocks):
+                single_block_args = [img_org, img_edit, txt, vec, vec_clean, txt_seq_len, freqs_cis, text_mask, mask_strategy[index + len(self.double_blocks)]]
                 img_org, img_edit, txt = block(*single_block_args)
-
-
+                if output_features and index % output_features_stride == 0:
+                    features_list.append(torch.cat([img_org, img_edit], dim=1))
+                    
         # ---------------------------- Final layer ------------------------------
         img_edit = self.final_layer(img_edit, vec)  # (N, T, patch_size ** 2 * out_channels)
 
         img_edit = self.unpatchify(img_edit, tt, th, tw)
-        if return_dict:
-            out["x"] = img_edit
-            return out
-        return img_edit
+        assert not return_dict, "return_dict is not supported."
+        if output_features:
+            features_list = torch.stack(features_list, dim=0)
+        else:
+            features_list = None
+        return (img_edit, features_list)
 
     def unpatchify(self, x, t, h, w):
         """
@@ -743,25 +676,24 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
     def params_count(self):
         counts = {
-            "double": sum(
-                [
-                    sum(p.numel() for p in block.img_attn_qkv.parameters())
-                    + sum(p.numel() for p in block.img_attn_proj.parameters())
-                    + sum(p.numel() for p in block.img_mlp.parameters())
-                    + sum(p.numel() for p in block.txt_attn_qkv.parameters())
-                    + sum(p.numel() for p in block.txt_attn_proj.parameters())
-                    + sum(p.numel() for p in block.txt_mlp.parameters())
-                    for block in self.double_blocks
-                ]
-            ),
-            "single": sum(
-                [
-                    sum(p.numel() for p in block.linear1.parameters())
-                    + sum(p.numel() for p in block.linear2.parameters())
-                    for block in self.single_blocks
-                ]
-            ),
-            "total": sum(p.numel() for p in self.parameters()),
+            "double":
+            sum([
+                sum(p.numel()
+                    for p in block.img_attn_qkv.parameters()) + sum(p.numel()
+                                                                    for p in block.img_attn_proj.parameters()) +
+                sum(p.numel() for p in block.img_mlp.parameters()) + sum(p.numel()
+                                                                         for p in block.txt_attn_qkv.parameters()) +
+                sum(p.numel() for p in block.txt_attn_proj.parameters()) + sum(p.numel()
+                                                                               for p in block.txt_mlp.parameters())
+                for block in self.double_blocks
+            ]),
+            "single":
+            sum([
+                sum(p.numel() for p in block.linear1.parameters()) + sum(p.numel() for p in block.linear2.parameters())
+                for block in self.single_blocks
+            ]),
+            "total":
+            sum(p.numel() for p in self.parameters()),
         }
         counts["attn+mlp"] = counts["double"] + counts["single"]
         return counts

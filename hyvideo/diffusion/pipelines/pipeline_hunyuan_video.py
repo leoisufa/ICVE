@@ -47,6 +47,9 @@ from ...constants import PRECISION_TO_TYPE
 from ...vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from ...text_encoder import TextEncoder
 from ...modules import HYVideoDiffusionTransformer
+from ...parallel.parallel_states import get_sequence_parallel_state, nccl_info
+from ...parallel.communications import all_gather
+from einops import rearrange
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -952,6 +955,14 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             latents,
         )
 
+        # Sequence-parallel: shard latents along the temporal dim across ranks.
+        world_size, rank = nccl_info.sp_size, nccl_info.rank_within_group
+        if get_sequence_parallel_state():
+            latents = rearrange(latents, "b t (n s) h w -> b t n s h w", n=world_size).contiguous()
+            latents = latents[:, :, rank, :, :, :]
+            latents_org = rearrange(latents_org, "b t (n s) h w -> b t n s h w", n=world_size).contiguous()
+            latents_org = latents_org[:, :, rank, :, :, :]
+
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_func_kwargs(
             self.scheduler.step,
@@ -1006,19 +1017,15 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     device_type="cuda", dtype=target_dtype, enabled=autocast_enabled
                 ):
                     noise_pred = self.transformer(
-                        x_org=latent_model_input_org,
-                        x_edit=latent_model_input,
-                        t=t_expand,
-                        text_states=prompt_embeds,
-                        text_mask=prompt_mask,
-                        text_states_2=prompt_embeds_2,
-                        freqs_cos=freqs_cis[0],
-                        freqs_sin=freqs_cis[1],
+                        hidden_states_org=latent_model_input_org,
+                        hidden_states_edit=latent_model_input,
+                        encoder_hidden_states=prompt_embeds,
+                        encoder_attention_mask=prompt_mask,
+                        encoder_hidden_states_2=prompt_embeds_2,
+                        timestep=t_expand,
                         guidance=guidance_expand,
-                        return_dict=True,
-                    )[
-                        "x"
-                    ]
+                        return_dict=False,
+                    )[0]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
@@ -1061,6 +1068,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
+
+        # Sequence-parallel: gather the temporally-sharded latents back to full.
+        if get_sequence_parallel_state():
+            latents = all_gather(latents, dim=2)
 
         if not output_type == "latent":
             expand_temporal_dim = False

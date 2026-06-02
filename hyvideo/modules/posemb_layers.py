@@ -1,10 +1,11 @@
+from typing import List, Tuple, Union
+
 import torch
-from typing import Union, Tuple, List
 
 
 def _to_tuple(x, dim=2):
     if isinstance(x, int):
-        return (x,) * dim
+        return (x, ) * dim
     elif len(x) == dim:
         return x
     else:
@@ -29,7 +30,7 @@ def get_meshgrid_nd(start, *args, dim=2):
     if len(args) == 0:
         # start is grid_size
         num = _to_tuple(start, dim=dim)
-        start = (0,) * dim
+        start = (0, ) * dim
         stop = num
     elif len(args) == 1:
         # start is start, args[0] is stop, step is 1
@@ -99,10 +100,7 @@ def reshape_for_broadcast(
                 x.shape[-2],
                 x.shape[-1],
             ), f"freqs_cis shape {freqs_cis[0].shape} does not match x shape {x.shape}"
-            shape = [
-                d if i == ndim - 2 or i == ndim - 1 else 1
-                for i, d in enumerate(x.shape)
-            ]
+            shape = [d if i == ndim - 2 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
         else:
             assert freqs_cis[0].shape == (
                 x.shape[1],
@@ -117,10 +115,7 @@ def reshape_for_broadcast(
                 x.shape[-2],
                 x.shape[-1],
             ), f"freqs_cis shape {freqs_cis.shape} does not match x shape {x.shape}"
-            shape = [
-                d if i == ndim - 2 or i == ndim - 1 else 1
-                for i, d in enumerate(x.shape)
-            ]
+            shape = [d if i == ndim - 2 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
         else:
             assert freqs_cis.shape == (
                 x.shape[1],
@@ -131,9 +126,7 @@ def reshape_for_broadcast(
 
 
 def rotate_half(x):
-    x_real, x_imag = (
-        x.float().reshape(*x.shape[:-1], -1, 2).unbind(-1)
-    )  # [B, S, H, D//2]
+    x_real, x_imag = (x.float().reshape(*x.shape[:-1], -1, 2).unbind(-1))  # [B, S, H, D//2]
     return torch.stack([-x_imag, x_real], dim=-1).flatten(3)
 
 
@@ -171,18 +164,12 @@ def apply_rotary_emb(
         xk_out = (xk.float() * cos + rotate_half(xk.float()) * sin).type_as(xk)
     else:
         # view_as_complex will pack [..., D/2, 2](real) to [..., D/2](complex)
-        xq_ = torch.view_as_complex(
-            xq.float().reshape(*xq.shape[:-1], -1, 2)
-        )  # [B, S, H, D//2]
-        freqs_cis = reshape_for_broadcast(freqs_cis, xq_, head_first).to(
-            xq.device
-        )  # [S, D//2] --> [1, S, 1, D//2]
+        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))  # [B, S, H, D//2]
+        freqs_cis = reshape_for_broadcast(freqs_cis, xq_, head_first).to(xq.device)  # [S, D//2] --> [1, S, 1, D//2]
         # (real, imag) * (cos, sin) = (real * cos - imag * sin, imag * cos + real * sin)
         # view_as_real will expand [..., D/2](complex) to [..., D/2, 2](real)
         xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3).type_as(xq)
-        xk_ = torch.view_as_complex(
-            xk.float().reshape(*xk.shape[:-1], -1, 2)
-        )  # [B, S, H, D//2]
+        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))  # [B, S, H, D//2]
         xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3).type_as(xk)
 
     return xq_out, xk_out
@@ -216,25 +203,21 @@ def get_nd_rotary_pos_embed(
         pos_embed (torch.Tensor): [HW, D/2]
     """
 
-    grid = get_meshgrid_nd(
-        start, *args, dim=len(rope_dim_list)
-    )  # [3, W, H, D] / [2, W, H]
+    grid = get_meshgrid_nd(start, *args, dim=len(rope_dim_list))  # [3, W, H, D] / [2, W, H]
 
     if isinstance(theta_rescale_factor, int) or isinstance(theta_rescale_factor, float):
         theta_rescale_factor = [theta_rescale_factor] * len(rope_dim_list)
     elif isinstance(theta_rescale_factor, list) and len(theta_rescale_factor) == 1:
         theta_rescale_factor = [theta_rescale_factor[0]] * len(rope_dim_list)
     assert len(theta_rescale_factor) == len(
-        rope_dim_list
-    ), "len(theta_rescale_factor) should equal to len(rope_dim_list)"
+        rope_dim_list), "len(theta_rescale_factor) should equal to len(rope_dim_list)"
 
     if isinstance(interpolation_factor, int) or isinstance(interpolation_factor, float):
         interpolation_factor = [interpolation_factor] * len(rope_dim_list)
     elif isinstance(interpolation_factor, list) and len(interpolation_factor) == 1:
         interpolation_factor = [interpolation_factor[0]] * len(rope_dim_list)
     assert len(interpolation_factor) == len(
-        rope_dim_list
-    ), "len(interpolation_factor) should equal to len(rope_dim_list)"
+        rope_dim_list), "len(interpolation_factor) should equal to len(rope_dim_list)"
 
     # use 1/ndim of dimensions to encode grid_axis
     embs = []
@@ -255,6 +238,74 @@ def get_nd_rotary_pos_embed(
         return cos, sin
     else:
         emb = torch.cat(embs, dim=1)  # (WHD, D/2)
+        return emb
+
+
+def get_nd_rotary_pos_embed_4D(
+    rope_dim_list: List[int],
+    rope_sizes: Tuple[int, int, int],
+    *,
+    batch_id: int,
+    theta: float = 10000.0,
+    use_real: bool = False,
+    theta_rescale_factor: Union[float, List[float]] = 1.0,
+    interpolation_factor: Union[float, List[float]] = 1.0,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    4D RoPE: (batch_id, T, H, W)
+    Args:
+        rope_dim_list: [d_batch, d_T, d_H, d_W]
+        rope_sizes: (T, H, W) —— 保留原有输入
+        batch_id: int —— RoPE 的第一维位置
+    """
+    assert len(rope_dim_list) == 4, "rope_dim_list must be length 4, e.g., [16,16,48,48]"
+    T, H, W = rope_sizes
+    S = T * H * W
+
+    # 参数展开为 4 轴
+    def _as_list(x):
+        if isinstance(x, (int, float)):
+            return [float(x)] * 4
+        if isinstance(x, list) and len(x) == 1:
+            return [float(x[0])] * 4
+        return [float(v) for v in x]
+
+    theta_rescale_list = _as_list(theta_rescale_factor)
+    interp_list = _as_list(interpolation_factor)
+
+    # 构造四个轴的位置
+    b_vec = torch.tensor([batch_id], dtype=torch.float32)
+    t_vec = torch.arange(T, dtype=torch.float32)
+    h_vec = torch.arange(H, dtype=torch.float32)
+    w_vec = torch.arange(W, dtype=torch.float32)
+
+    Bg, Tg, Hg, Wg = torch.meshgrid(b_vec, t_vec, h_vec, w_vec, indexing="ij")
+
+    b_pos = Bg.reshape(-1)  # [S] —— 全部是 batch_id
+    t_pos = Tg.reshape(-1)  # [S]
+    h_pos = Hg.reshape(-1)  # [S]
+    w_pos = Wg.reshape(-1)  # [S]
+
+    embs = []
+    for axis_pos, d_axis, theta_r, interp_r in zip(
+        [b_pos, t_pos, h_pos, w_pos], rope_dim_list, theta_rescale_list, interp_list
+    ):
+        emb = get_1d_rotary_pos_embed(
+            d_axis,
+            axis_pos,
+            theta=theta,
+            use_real=use_real,
+            theta_rescale_factor=theta_r,
+            interpolation_factor=interp_r,
+        )
+        embs.append(emb)
+
+    if use_real:
+        cos = torch.cat([e[0] for e in embs], dim=1)  # [S, head_dim]
+        sin = torch.cat([e[1] for e in embs], dim=1)  # [S, head_dim]
+        return cos, sin
+    else:
+        emb = torch.cat(embs, dim=1)  # [S, head_dim/2] complex
         return emb
 
 
@@ -292,11 +343,9 @@ def get_1d_rotary_pos_embed(
     # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
     # has some connection to NTK literature
     if theta_rescale_factor != 1.0:
-        theta *= theta_rescale_factor ** (dim / (dim - 2))
+        theta *= theta_rescale_factor**(dim / (dim - 2))
 
-    freqs = 1.0 / (
-        theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)
-    )  # [D/2]
+    freqs = 1.0 / (theta**(torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))  # [D/2]
     # assert interpolation_factor == 1.0, f"interpolation_factor: {interpolation_factor}"
     freqs = torch.outer(pos * interpolation_factor, freqs)  # [S, D/2]
     if use_real:
@@ -304,7 +353,5 @@ def get_1d_rotary_pos_embed(
         freqs_sin = freqs.sin().repeat_interleave(2, dim=1)  # [S, D]
         return freqs_cos, freqs_sin
     else:
-        freqs_cis = torch.polar(
-            torch.ones_like(freqs), freqs
-        )  # complex64     # [S, D/2]
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
         return freqs_cis

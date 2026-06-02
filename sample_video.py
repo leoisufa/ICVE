@@ -22,12 +22,16 @@ def main():
         os.makedirs(save_path, exist_ok=True)
 
     # Load models
+    _t_load0 = time.time()
     hunyuan_video_sampler = HunyuanVideoSampler.from_pretrained(models_root_path, args=args)
-    
+    load_time = time.time() - _t_load0
+    logger.info(f"[timing] model load time: {load_time:.1f}s")
+
     # Get the updated args
     args = hunyuan_video_sampler.args
 
     # Start sampling
+    _t_infer0 = time.time()
     # TODO: batch inference check
     outputs = hunyuan_video_sampler.predict(
         prompt=args.prompt,
@@ -45,7 +49,10 @@ def main():
         embedded_guidance_scale=args.embedded_cfg_scale
     )
     samples = outputs['samples']
-    
+    infer_time = time.time() - _t_infer0
+    logger.info(f"[timing] inference (predict) time: {infer_time:.1f}s")
+    logger.info(f"[timing] total (load+infer): {load_time + infer_time:.1f}s")
+
     # Save samples
     if 'LOCAL_RANK' not in os.environ or int(os.environ['LOCAL_RANK']) == 0:
         for i, sample in enumerate(samples):

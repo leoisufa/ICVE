@@ -14,3 +14,4 @@ safetensors==0.4.3
 gradio==5.0.0
 decord==0.6.0
 av==13.1.0
+packaging

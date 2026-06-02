@@ -44,12 +44,13 @@
 
 **Star us if you find this project useful! ⭐**
 
-### **The new model will be coming soon. Wan2.1-T2V-14B fondation model.**
+### **The new model will be coming soon. Wan2.1-T2V-14B foundation model.**
 
 ## 🎉 Updates
+- [12/2025] 🔥 Multi-GPU sequence-parallel inference and an auto attention backend (flash-attn with PyTorch SDPA fallback, so flash-attn is now optional).
 - [12/2025] ⚠️ Fix the GPU OOM bug on 480P inference.
 - [10/2025] 🔥 [Model checkpoints](https://huggingface.co/leoisufa/ICVE) is released!
-- [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is relased!
+- [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is released!
 
 ## 🧩 Overview
 ICVE proposes a low-cost pretraining strategy for instruction-based video editing via in-context learning from unpaired clips. Built upon [HunyuanVideoT2V](https://github.com/Tencent-Hunyuan/HunyuanVideo), it first learns editing concepts from about **1M** unpaired videos, then fine-tunes on **<150K** paired editing data for improved instruction alignment and visual quality — enabling general editing operations guided by natural language.
@@ -92,7 +93,8 @@ conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 pytorch-cuda=
 # 4. Install pip dependencies
 python -m pip install -r requirements.txt
 
-# 5. Install flash attention v2 for acceleration (requires CUDA 11.8 or above)
+# 5. (Optional) Install flash-attention. With it installed, `--attn-mode auto`
+#    uses flash; otherwise it falls back to the PyTorch SDPA backend.
 python -m pip install ninja
 python -m pip install git+https://github.com/Dao-AILab/flash-attention.git@v2.6.3
 ```
@@ -103,7 +105,7 @@ python -m pip install git+https://github.com/Dao-AILab/flash-attention.git@v2.6.
    👉 [Download Pretrained Models](https://github.com/Tencent-Hunyuan/HunyuanVideo/blob/main/ckpts/README.md)  
    and place the downloaded weights into the `ckpts/` directory as shown above.
 2. **ICVE Checkpoint**  
-Download the our model weights from  
+Download our model weights from  
 👉 [Hugging Face](https://huggingface.co/leoisufa/ICVE)  
 and place them in the `checkpoint/` directory.
 
@@ -119,7 +121,7 @@ ICVE/
 │   ├── text_encoder
 │   └── text_encoder_2
 ├── hyvideo/
-├── scripts/
+├── scripts/  # glasses.sh / kid.sh (single-GPU), glasses_multigpu.sh (multi-GPU SP)
 ├── requirements.txt
 ├── sample_video.py
 └── README.md
@@ -127,16 +129,31 @@ ICVE/
 
 ## 🚀 Running the Demos
 
-> **OOM Bug Fix:** We have fixed an OOM issue caused by the VAE not enabling `enable_tiling()` during original video encoding. After the fix, running inference on an original video with a resolution of 480×768×77 requires approximately 54 GB of GPU memory.
+> **OOM Bug Fix:** We fixed an OOM issue caused by the VAE not enabling `enable_tiling()` during original-video encoding.
 
-You can directly run the provided demo scripts under the [`scripts/`](./scripts) directory.
- 
-Alternatively, you can manually run the example command below:
+ICVE supports two inference modes that share the same entrypoint (`sample_video.py`):
+
+- **Single-GPU** — fits on an 80GB GPU without offload; add `--use-cpu-offload` for smaller cards (slower).
+- **Multi-GPU sequence parallel (SP)** — shards the latent across GPUs for a near-linear speedup, launched with `torchrun`.
+
+By default the attention backend is **auto** (`--attn-mode auto`): it uses **flash-attn** if installed, otherwise falls back to the dependency-free **PyTorch SDPA** backend. Force a specific backend with `--attn-mode torch` or `--attn-mode flash`.
+
+Ready-to-run demos live under [`scripts/`](./scripts):
+```bash
+# Single GPU
+bash scripts/glasses.sh
+bash scripts/kid.sh
+
+# Multi-GPU sequence parallel (e.g. 8 GPUs)
+bash scripts/glasses_multigpu.sh 8
+```
+
+### Single-GPU command
 ```bash
 python sample_video.py \
     --dit-weight checkpoint/diffusion_pytorch_model.safetensors \
     --video-size 768 480 \
-    --video-length 77 \
+    --video-length 61 \
     --infer-steps 50 \
     --prompt "Add black glasses to the person's face." \
     --video "assets/glasses.mp4" \
@@ -145,9 +162,30 @@ python sample_video.py \
     --cfg-scale 6.0 \
     --flow-shift 7.0 \
     --flow-reverse \
-    --use-cpu-offload \
+    --attn-mode auto \
     --save-path ./results
 ```
+
+### Multi-GPU sequence-parallel command
+```bash
+torchrun --nproc_per_node=8 --master_port=29501 sample_video.py \
+    --dit-weight checkpoint/diffusion_pytorch_model.safetensors \
+    --video-size 768 480 \
+    --video-length 61 \
+    --infer-steps 50 \
+    --prompt "Add black glasses to the person's face." \
+    --video "assets/glasses.mp4" \
+    --seed 42 \
+    --embedded-cfg-scale 1.0 \
+    --cfg-scale 6.0 \
+    --flow-shift 7.0 \
+    --flow-reverse \
+    --attn-mode auto \
+    --save-path ./results_multigpu
+```
+
+> **SP constraint:** the latent temporal length must be divisible by the number of GPUs, where `latent_T = (video_length - 1) / 4 + 1`. For example `--video-length 61` gives `latent_T = 16`, divisible by 2/4/8.
+
 
 ## 🙏 Acknowledgements
 We thank the following prior art for their excellent open source work: 
@@ -156,7 +194,7 @@ We thank the following prior art for their excellent open source work:
 - [VACE](https://github.com/ali-vilab/VACE)
 
 ## 🔗 BibTeX
-If you find [ICEV](https://arxiv.org/abs/2510.14648) useful for your research and applications, please cite using this BibTeX:
+If you find [ICVE](https://arxiv.org/abs/2510.14648) useful for your research and applications, please cite using this BibTeX:
 ```BibTeX
 @article{liao2025context,
   title={In-Context Learning with Unpaired Clips for Instruction-based Video Editing},

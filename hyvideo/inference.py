@@ -14,8 +14,8 @@ from hyvideo.vae import load_vae
 from hyvideo.modules import load_model
 from hyvideo.text_encoder import TextEncoder
 from hyvideo.utils.data_utils import align_to
-from hyvideo.modules.posemb_layers import get_nd_rotary_pos_embed
-from hyvideo.modules.fp8_optimization import convert_fp8_linear
+from hyvideo.modules.attenion import set_attn_mode
+from hyvideo.parallel.parallel_states import initialize_sequence_parallel_state
 from hyvideo.diffusion.schedulers import FlowMatchDiscreteScheduler
 from hyvideo.diffusion.pipelines import HunyuanVideoPipeline
 
@@ -23,13 +23,6 @@ from decord import VideoReader, cpu
 import torchvision.transforms.functional as F
 from torchvision import transforms
 from safetensors.torch import load_file as safetensors_load_file
-
-xfuser = None
-get_sequence_parallel_world_size = None
-get_sequence_parallel_rank = None
-get_sp_group = None
-initialize_model_parallel = None
-init_distributed_environment = None
 
     
 class ResizeCropAspectCenter:
@@ -128,31 +121,26 @@ class Inference(object):
         logger.info(f"Got text-to-video model root path: {pretrained_model_path}")
         
         # ==================== Initialize Distributed Environment ================
-        if args.ulysses_degree > 1 or args.ring_degree > 1:
-            assert xfuser is not None, \
-                "Ulysses Attention and Ring Attention requires xfuser package."
-
+        # Sequence-parallel degree is taken from WORLD_SIZE (set by torchrun).
+        # Single process -> single card; torchrun --nproc_per_node=N -> N-way SP.
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if world_size > 1:
             assert args.use_cpu_offload is False, \
                 "Cannot enable use_cpu_offload in the distributed environment."
-
-            dist.init_process_group("nccl")
-
-            assert dist.get_world_size() == args.ring_degree * args.ulysses_degree, \
-                "number of GPUs should be equal to ring_degree * ulysses_degree."
-
-            init_distributed_environment(rank=dist.get_rank(), world_size=dist.get_world_size())
-            
-            initialize_model_parallel(
-                sequence_parallel_degree=dist.get_world_size(),
-                ring_degree=args.ring_degree,
-                ulysses_degree=args.ulysses_degree,
-            )
-            device = torch.device(f"cuda:{os.environ['LOCAL_RANK']}")
+            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+            torch.cuda.set_device(local_rank)
+            if not dist.is_initialized():
+                dist.init_process_group(backend="nccl", init_method="env://")
+            device = torch.device(f"cuda:{local_rank}")
         else:
             if device is None:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
+        initialize_sequence_parallel_state(world_size)
 
-        parallel_args = {"ulysses_degree": args.ulysses_degree, "ring_degree": args.ring_degree}
+        # Select attention backend (default: torch SDPA, no flash-attn needed).
+        set_attn_mode(getattr(args, "attn_mode", "torch"))
+
+        parallel_args = {"sp_size": world_size}
 
         # ======================== Get the args path =============================
 
@@ -171,8 +159,6 @@ class Inference(object):
             out_channels=out_channels,
             factor_kwargs=factor_kwargs,
         )
-        if args.use_fp8:
-            convert_fp8_linear(model, args.dit_weight, original_dtype=PRECISION_TO_TYPE[args.precision])
         model = model.to(device)
         model = Inference.load_state_dict(args, model, pretrained_model_path)
         model.eval()
@@ -426,53 +412,6 @@ class HunyuanVideoSampler(Inference):
 
         return pipeline
 
-    def get_rotary_pos_embed(self, video_length, height, width):
-        target_ndim = 3
-        ndim = 5 - 2
-        # 884
-        if "884" in self.args.vae:
-            latents_size = [(video_length - 1) // 4 + 1, height // 8, width // 8]
-        elif "888" in self.args.vae:
-            latents_size = [(video_length - 1) // 8 + 1, height // 8, width // 8]
-        else:
-            latents_size = [video_length, height // 8, width // 8]
-
-        if isinstance(self.model.patch_size, int):
-            assert all(s % self.model.patch_size == 0 for s in latents_size), (
-                f"Latent size(last {ndim} dimensions) should be divisible by patch size({self.model.patch_size}), "
-                f"but got {latents_size}."
-            )
-            rope_sizes = [s // self.model.patch_size for s in latents_size]
-        elif isinstance(self.model.patch_size, list):
-            assert all(
-                s % self.model.patch_size[idx] == 0
-                for idx, s in enumerate(latents_size)
-            ), (
-                f"Latent size(last {ndim} dimensions) should be divisible by patch size({self.model.patch_size}), "
-                f"but got {latents_size}."
-            )
-            rope_sizes = [
-                s // self.model.patch_size[idx] for idx, s in enumerate(latents_size)
-            ]
-
-        if len(rope_sizes) != target_ndim:
-            rope_sizes = [1] * (target_ndim - len(rope_sizes)) + rope_sizes  # time axis
-        head_dim = self.model.hidden_size // self.model.heads_num
-        rope_dim_list = self.model.rope_dim_list
-        if rope_dim_list is None:
-            rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
-        assert (
-            sum(rope_dim_list) == head_dim
-        ), "sum(rope_dim_list) should equal to head_dim of attention layer"
-        freqs_cos, freqs_sin = get_nd_rotary_pos_embed(
-            rope_dim_list,
-            rope_sizes,
-            theta=self.args.rope_theta,
-            use_real=True,
-            theta_rescale_factor=1,
-        )
-        return freqs_cos, freqs_sin
-
     @torch.no_grad()
     def predict(
         self,
@@ -594,13 +533,21 @@ class HunyuanVideoSampler(Inference):
         self.pipeline.scheduler = scheduler
 
         # ========================================================================
-        # Build Rope freqs
+        # Token count for the scheduler (RoPE itself is computed inside the model).
         # ========================================================================
-        freqs_cos, freqs_sin = self.get_rotary_pos_embed(
-            target_video_length, target_height, target_width
-        )
-        n_tokens = freqs_cos.shape[0]
-        
+        if "884" in self.args.vae:
+            latents_size = [(target_video_length - 1) // 4 + 1, target_height // 8, target_width // 8]
+        elif "888" in self.args.vae:
+            latents_size = [(target_video_length - 1) // 8 + 1, target_height // 8, target_width // 8]
+        else:
+            latents_size = [target_video_length, target_height // 8, target_width // 8]
+        patch_size = self.model.patch_size
+        if isinstance(patch_size, int):
+            rope_sizes = [s // patch_size for s in latents_size]
+        else:
+            rope_sizes = [s // patch_size[idx] for idx, s in enumerate(latents_size)]
+        n_tokens = rope_sizes[0] * rope_sizes[1] * rope_sizes[2]
+
         # ========================================================================
         # Load original video
         # ========================================================================
@@ -649,7 +596,6 @@ class HunyuanVideoSampler(Inference):
             num_videos_per_prompt=num_videos_per_prompt,
             generator=generator,
             output_type="pil",
-            freqs_cis=(freqs_cos, freqs_sin),
             n_tokens=n_tokens,
             embedded_guidance_scale=embedded_guidance_scale,
             data_type="video" if target_video_length > 1 else "image",

@@ -1,7 +1,7 @@
 import math
+
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat
 
 from ..utils.helpers import to_2tuple
 
@@ -43,7 +43,7 @@ class PatchEmbed(nn.Module):
             kernel_size=patch_size,
             stride=patch_size,
             bias=bias,
-            **factory_kwargs
+            **factory_kwargs,
         )
         nn.init.xavier_uniform_(self.proj.weight.view(self.proj.weight.size(0), -1))
         if bias:
@@ -73,14 +73,14 @@ class TextProjection(nn.Module):
             in_features=in_channels,
             out_features=hidden_size,
             bias=True,
-            **factory_kwargs
+            **factory_kwargs,
         )
         self.act_1 = act_layer()
         self.linear_2 = nn.Linear(
             in_features=hidden_size,
             out_features=hidden_size,
             bias=True,
-            **factory_kwargs
+            **factory_kwargs,
         )
 
     def forward(self, caption):
@@ -105,11 +105,8 @@ def timestep_embedding(t, dim, max_period=10000):
     .. ref_link: https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
     """
     half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(start=0, end=half, dtype=torch.float32)
-        / half
-    ).to(device=t.device)
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) /
+                      half).to(device=t.device)
     args = t[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:
@@ -140,9 +137,7 @@ class TimestepEmbedder(nn.Module):
             out_size = hidden_size
 
         self.mlp = nn.Sequential(
-            nn.Linear(
-                frequency_embedding_size, hidden_size, bias=True, **factory_kwargs
-            ),
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True, **factory_kwargs),
             act_layer(),
             nn.Linear(hidden_size, out_size, bias=True, **factory_kwargs),
         )
@@ -150,8 +145,6 @@ class TimestepEmbedder(nn.Module):
         nn.init.normal_(self.mlp[2].weight, std=0.02)
 
     def forward(self, t):
-        t_freq = timestep_embedding(
-            t, self.frequency_embedding_size, self.max_period
-        ).type(self.mlp[0].weight.dtype)
+        t_freq = timestep_embedding(t, self.frequency_embedding_size, self.max_period).type(self.mlp[0].weight.dtype)
         t_emb = self.mlp(t_freq)
         return t_emb

@@ -353,12 +353,6 @@ def add_inference_args(parser: argparse.ArgumentParser):
     )
 
     group.add_argument(
-        "--use-fp8",
-        action="store_true",
-        help="Enable use fp8 for inference acceleration."
-    )
-
-    group.add_argument(
         "--reproduce",
         action="store_true",
         help="Enable reproducibility by setting random seeds and deterministic algorithms.",
@@ -370,19 +364,17 @@ def add_inference_args(parser: argparse.ArgumentParser):
 def add_parallel_args(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="Parallel args")
 
-    # ======================== Model loads ========================
+    # Attention backend: "auto" uses flash-attn if installed, otherwise falls back
+    # to PyTorch SDPA (F.scaled_dot_product_attention). Force with "torch"/"flash".
     group.add_argument(
-        "--ulysses-degree",
-        type=int,
-        default=1,
-        help="Ulysses degree.",
+        "--attn-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "torch", "flash"],
+        help="Attention backend: 'auto' (flash if available, else torch), 'torch', or 'flash'.",
     )
-    group.add_argument(
-        "--ring-degree",
-        type=int,
-        default=1,
-        help="Ulysses degree.",
-    )
+    # Sequence-parallel degree is taken from WORLD_SIZE (set by torchrun) at runtime:
+    # single process -> single-card; torchrun --nproc_per_node=N -> N-way SP.
 
     return parser
 
