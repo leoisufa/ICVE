@@ -47,7 +47,7 @@
 ### **The new model will be coming soon. Wan2.1-T2V-14B foundation model.**
 
 ## 🎉 Updates
-- [12/2025] 🔥 Multi-GPU sequence-parallel inference and an auto attention backend (flash-attn with PyTorch SDPA fallback, so flash-attn is now optional).
+- [12/2025] 🔥 Multi-GPU sequence-parallel inference.
 - [12/2025] ⚠️ Fix the GPU OOM bug on 480P inference.
 - [10/2025] 🔥 [Model checkpoints](https://huggingface.co/leoisufa/ICVE) is released!
 - [10/2025] 🔥 [Codebase](https://github.com/leoisufa/ICVE) is released!
